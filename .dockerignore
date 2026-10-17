@@ -5,7 +5,9 @@
 .pytest_cache
 **/__pycache__
 jobs
-bundle
+bundle/*
+!bundle/pipeline_config.json
+!bundle/decision.json
 models
 .env
 *.log

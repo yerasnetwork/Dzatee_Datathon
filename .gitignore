@@ -5,7 +5,9 @@ __pycache__/
 .test-deps/
 .verification/
 jobs/
-bundle/
+bundle/*
+!bundle/pipeline_config.json
+!bundle/decision.json
 models/
 .env
 *.log

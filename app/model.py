@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import base64
-import json
+from contextlib import contextmanager
+import importlib
 import os
 from pathlib import Path
 import random
@@ -12,7 +13,7 @@ import subprocess
 import tempfile
 import time
 from types import SimpleNamespace
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 # Set these BEFORE importing anything from Transformers/Hugging Face.
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -20,7 +21,36 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["DO_NOT_TRACK"] = "1"
 
-from fc_pipeline import Video, extract_frames, ffprobe_duration, load_bundle, to_api
+if TYPE_CHECKING:
+    from fc_pipeline import Video
+
+
+def pipeline_module():
+    """Choose lazily: pytest sets MOCK_MODEL after importing the app factory."""
+    name = "fc_pipeline_mock" if os.getenv("MOCK_MODEL") == "1" else "fc_pipeline"
+    return importlib.import_module(name)
+
+
+def load_bundle(bundle_dir, load_4bit=None, merge=True):
+    """Real loader remains lazy; importing the web service never loads weights."""
+    from fc_pipeline import load_bundle as real_load_bundle
+    return real_load_bundle(bundle_dir, load_4bit=load_4bit, merge=merge)
+
+
+@contextmanager
+def pipeline_temp_directory(directory: str):
+    # The v3 pipeline creates additional TemporaryDirectory instances internally.
+    # Its process is isolated and sequential, so they can share this existing
+    # job workspace and remain covered by the unchanged supervisor cleanup.
+    if os.getenv("MOCK_MODEL") == "1":
+        yield
+        return
+    previous = tempfile.tempdir
+    try:
+        tempfile.tempdir = directory
+        yield
+    finally:
+        tempfile.tempdir = previous
 
 
 class VideoAnalyzer(Protocol):
@@ -47,29 +77,16 @@ def load_analyzer() -> VideoAnalyzer:
     if os.getenv("MOCK_MODEL") == "1":
         return MockAnalyzer()
 
-    bundle = Path(os.getenv("BUNDLE_DIR", "./bundle")).resolve()
-    if not (bundle / "pipeline_config.json").is_file() or not (bundle / "adapter").is_dir():
-        raise RuntimeError(f"BUNDLE_DIR должен содержать pipeline_config.json и adapter/: {bundle}")
+    bundle = Path(os.getenv("FORTE_BUNDLE_DIR") or os.getenv("BUNDLE_DIR") or "./bundle").resolve()
+    if not all((bundle / name).is_file() for name in ("pipeline_config.json", "decision.json")):
+        raise RuntimeError(f"FORTE_BUNDLE_DIR должен содержать pipeline_config.json и decision.json: {bundle}")
     four_bit = optional_bool(os.getenv("LOAD_4BIT"))
     base = os.getenv("BASE_MODEL_PATH")
-    if not base:
-        # HF_HUB_OFFLINE permits an already-populated local Hub cache as well.
-        return load_bundle(bundle, load_4bit=four_bit, merge=True)
-
-    local_model = Path(base).resolve()
-    if not local_model.is_dir():
+    if base and not Path(base).is_dir():
         raise RuntimeError("BASE_MODEL_PATH должен указывать на локальную папку модели")
-    meta = json.loads((bundle / "pipeline_config.json").read_text(encoding="utf-8"))
-    meta["cfg"]["model_id"] = str(local_model)
-    # No edits to the user's bundle or fc_pipeline.py. Copying works on Windows
-    # without administrator privileges and also with read-only Docker mounts.
-    with tempfile.TemporaryDirectory(prefix="forte-bundle-") as temporary:
-        patched = Path(temporary)
-        (patched / "pipeline_config.json").write_text(
-            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
-        )
-        shutil.copytree(bundle / "adapter", patched / "adapter")
-        return load_bundle(patched, load_4bit=four_bit, merge=True)
+    # The supplied v3 loader reads BASE_MODEL_PATH itself. Its decision.json
+    # branch needs neither a LoRA adapter nor peft. Hub IDs use the offline cache.
+    return load_bundle(bundle, load_4bit=four_bit, merge=True)
 
 
 class MockAnalyzer:
@@ -120,12 +137,14 @@ class MockAnalyzer:
 def analyze_video(analyzer: VideoAnalyzer, path: Path, job_dir: Path) -> dict:
     """The original model path, with all extracted frames confined to a temp dir."""
     with tempfile.TemporaryDirectory(prefix="frames-", dir=job_dir) as frame_dir:
-        v = Video("job", [], path, ffprobe_duration(path), [])
-        if not 0 < v.duration < float("inf"):
-            raise ValueError("Видео не содержит корректной длительности")
-        extract_frames(v, frame_dir, analyzer.cfg)
-        if not v.files:
-            raise ValueError("В видео не найдено кадров")
-        raw = analyzer.analyze(v)
-        return {"api": to_api(raw), "raw": raw}
+        with pipeline_temp_directory(frame_dir):
+            pipeline = pipeline_module()
+            v = pipeline.Video("job", [], path, pipeline.ffprobe_duration(path), [])
+            if not 0 < v.duration < float("inf"):
+                raise ValueError("Видео не содержит корректной длительности")
+            pipeline.extract_frames(v, frame_dir, analyzer.cfg)
+            if not v.files:
+                raise ValueError("В видео не найдено кадров")
+            raw = analyzer.analyze(v)
+            return {"api": pipeline.to_api(raw), "raw": raw}
 

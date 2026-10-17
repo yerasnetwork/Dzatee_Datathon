@@ -21,7 +21,8 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.9.1 torchvision==0.24.1 \
     && python -m pip install -r requirements.txt
 
-COPY fc_pipeline.py ./
+COPY fc_pipeline.py fc_pipeline_mock.py ./
+COPY bundle ./bundle
 COPY app ./app
 COPY run.sh ./run.sh
 RUN useradd --create-home --uid 10001 cashier \
