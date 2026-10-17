@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f4f5f7">
+  <meta name="description" content="Проверка видеозаписей кассовых операций: отметки и кадры для проверки человеком.">
+  <title>Проверка видеозаписи кассира</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Перейти к содержимому</a>
+
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="app-title">
+        <span class="app-name">Контроль кассовых операций</span>
+        <span class="app-sub">Проверка видеозаписи</span>
+      </div>
+      <div class="header-status">
+        <span id="mock-notice" class="tag tag-demo" hidden title="Отметки синтетические, содержимое видео не анализируется">Демо-режим</span>
+        <span id="server-status" class="server-status" data-state="unknown">
+          <span class="dot" aria-hidden="true"></span><span id="server-status-text">Сервер: проверка…</span>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <div class="disclaimer-bar" role="note">
+    <div class="disclaimer-inner">
+      <svg class="icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 9v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="6.2" r="1" fill="currentColor"/></svg>
+      <p>Результат является подсказкой для проверки человеком, а не юридическим или дисциплинарным заключением.</p>
+    </div>
+  </div>
+
+  <main id="main" tabindex="-1">
+    <!-- Шаг 1: выбор файла -->
+    <section id="upload-screen" class="upload-screen" aria-labelledby="upload-title">
+      <h1 id="upload-title">Проверка видеозаписи кассира</h1>
+      <p class="lead">Загрузите запись с камеры кассового узла. Сервис отметит моменты, которые стоит проверить, и покажет кадры с таймкодами.</p>
+
+      <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-describedby="dropzone-hint">
+        <svg class="dropzone-icon" viewBox="0 0 48 48" aria-hidden="true"><rect x="5" y="11" width="38" height="28" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20.5v9l8-4.5z" fill="currentColor"/></svg>
+        <p class="dropzone-title">Перетащите видео сюда</p>
+        <p class="dropzone-or">или</p>
+        <span class="button button-primary">Выбрать файл</span>
+        <p id="dropzone-hint" class="dropzone-hint">Формат .mov, до 200 МБ. Обычно запись около 30 МБ и до 145 секунд.</p>
+      </div>
+      <input id="file-input" type="file" accept=".mov,video/quicktime" hidden>
+
+      <div id="upload-error" class="alert alert-error" role="alert" hidden>
+        <div class="alert-body">
+          <p class="alert-title" id="upload-error-title"></p>
+          <p id="upload-error-message"></p>
+        </div>
+        <button id="upload-retry" class="button button-secondary" type="button">Повторить</button>
+      </div>
+
+      <ul class="facts">
+        <li><strong>Воспроизведение</strong> видео идёт локально в браузере.</li>
+        <li><strong>На сервер</strong> файл отправляется только для анализа.</li>
+        <li><strong>Записи и результаты</strong> временно хранятся на сервере и удаляются автоматически.</li>
+      </ul>
+    </section>
+
+    <!-- Шаг 2–3: видео и результат -->
+    <div id="workspace" class="workspace" hidden>
+      <section class="card media-card" aria-labelledby="media-title">
+        <div class="card-head">
+          <div class="file-info">
+            <h2 id="media-title" class="card-title">Видеозапись</h2>
+            <p class="file-line"><span id="file-name" class="file-name"></span> <span id="file-meta" class="file-meta"></span></p>
+          </div>
+          <button id="change-file" class="button button-ghost" type="button">Заменить файл</button>
+        </div>
+
+        <div class="player-wrap">
+          <video id="video-player" controls playsinline preload="metadata" aria-label="Выбранная видеозапись"></video>
+        </div>
+        <p id="playback-note" class="note note-warn playback-note" hidden>Браузер не может воспроизвести этот файл. Анализ на сервере доступен, кадры-доказательства будут показаны в результатах.</p>
+        <p id="duration-warning" class="note note-warn" hidden></p>
+
+        <div id="timeline" class="timeline" hidden>
+          <div class="timeline-head">
+            <span class="timeline-label">Отметки на шкале времени</span>
+            <span id="timeline-hint" class="timeline-hint">Нажмите на отметку, чтобы перейти к моменту</span>
+          </div>
+          <div id="timeline-track" class="timeline-track">
+            <span id="timeline-playhead" class="timeline-playhead" aria-hidden="true"></span>
+          </div>
+          <div class="timeline-scale" aria-hidden="true"><span>00:00</span><span id="timeline-end">00:00</span></div>
+        </div>
+      </section>
+
+      <section class="card status-card" aria-labelledby="status-title" aria-busy="false">
+        <h2 id="status-title" class="visually-hidden">Статус и результат проверки</h2>
+        <div id="live-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+
+        <!-- Готово к отправке -->
+        <div id="ready-state" class="state">
+          <p class="state-kicker">Шаг 2 из 3</p>
+          <p class="state-title">Видео выбрано</p>
+          <p class="state-text">Проверьте, что выбрана нужная запись. Анализ обычно занимает до 2–3 минут, максимум 5.</p>
+          <button id="analyze-button" class="button button-primary button-wide" type="button">Проверить видео</button>
+        </div>
+
+        <!-- Обработка -->
+        <div id="processing-state" class="state" hidden>
+          <p class="state-kicker">Шаг 2 из 3</p>
+          <p class="state-title">Идёт проверка</p>
+          <ol class="stepper" aria-label="Этапы обработки">
+            <li id="step-upload" class="step" data-state="active"><span class="step-mark" aria-hidden="true"></span><span class="step-name">Загружено</span><span class="step-detail" id="step-upload-detail"></span></li>
+            <li id="step-queue" class="step" data-state="pending"><span class="step-mark" aria-hidden="true"></span><span class="step-name">В очереди</span><span class="step-detail" id="step-queue-detail"></span></li>
+            <li id="step-analysis" class="step" data-state="pending"><span class="step-mark" aria-hidden="true"></span><span class="step-name">Анализ</span><span class="step-detail" id="step-analysis-detail"></span></li>
+          </ol>
+          <div class="progress-area">
+            <progress id="upload-progress" class="upload-progress" max="100" value="0" aria-label="Загрузка файла на сервер"></progress>
+            <div id="indeterminate" class="indeterminate" hidden><span></span></div>
+          </div>
+          <div class="timer-row">
+            <span class="timer-label">Прошло</span>
+            <span id="elapsed" class="timer" role="timer" aria-live="off">00:00</span>
+          </div>
+          <p class="state-text">Обычно до 2–3 минут, максимум 5. Результат появится автоматически, страницу можно не обновлять.</p>
+        </div>
+
+        <!-- Ошибка -->
+        <div id="error-state" class="state" hidden>
+          <div class="alert alert-error alert-block" role="alert">
+            <p id="error-title" class="alert-title" tabindex="-1"></p>
+            <p id="error-message"></p>
+          </div>
+          <div class="button-row">
+            <button id="retry-button" class="button button-primary" type="button">Повторить</button>
+            <button id="error-new-button" class="button button-secondary" type="button">Проверить другое видео</button>
+          </div>
+        </div>
+
+        <!-- Результат -->
+        <div id="result-state" class="state" hidden>
+          <div id="verdict" class="verdict">
+            <svg class="verdict-icon icon-found" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 22 20.5H2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 9.5v5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="17.4" r="1.1" fill="currentColor"/></svg>
+            <svg class="verdict-icon icon-clean" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m7.5 12.3 3 3 6-6.3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div class="verdict-body">
+              <p class="verdict-label">Результат анализа</p>
+              <h2 id="verdict-text" class="verdict-text" tabindex="-1"></h2>
+              <p id="verdict-meta" class="verdict-meta"></p>
+            </div>
+            <span id="verdict-count" class="verdict-count" hidden></span>
+          </div>
+          <p class="disclaimer-inline">Результат является подсказкой для проверки человеком, а не юридическим или дисциплинарным заключением.</p>
+
+          <div id="violations-section" hidden>
+            <h3 class="section-title">Отметки для проверки</h3>
+            <p class="section-hint">Нажмите на карточку или таймкод, чтобы перемотать видео. Нажмите на кадр, чтобы увеличить его.</p>
+            <ol id="violations-list" class="violations-list"></ol>
+          </div>
+          <p id="clean-text" class="state-text" hidden>Сервис не отметил моментов для проверки. Окончательное решение принимает проверяющий; при необходимости просмотрите запись целиком.</p>
+
+          <div class="button-row result-actions">
+            <button id="new-check-button" class="button button-secondary" type="button">Проверить другое видео</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="app-footer">
+    <p>Записи и результаты временно хранятся на сервере и удаляются автоматически. Видео воспроизводится локально в браузере.</p>
+  </footer>
+
+  <dialog id="frame-dialog" aria-labelledby="frame-caption">
+    <div class="dialog-head">
+      <p id="frame-caption" class="dialog-caption"></p>
+      <button id="close-dialog" class="icon-button" type="button" aria-label="Закрыть увеличенный кадр">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <img id="enlarged-frame" alt="">
+    <div class="dialog-actions">
+      <button id="prev-frame" class="button button-dark" type="button">← Предыдущий</button>
+      <button id="seek-frame" class="button button-light" type="button">Перейти к моменту в видео</button>
+      <button id="next-frame" class="button button-dark" type="button">Следующий →</button>
+    </div>
+  </dialog>
+</body>
+</html>

@@ -1,0 +1,11 @@
+.git
+.venv
+.test-deps
+.verification
+.pytest_cache
+**/__pycache__
+jobs
+bundle
+models
+.env
+*.log

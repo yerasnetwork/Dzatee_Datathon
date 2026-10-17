@@ -1,0 +1,7 @@
+# CPU-only web/mock installation. No GPU packages are imported in mock mode.
+fastapi>=0.115.6,<1
+uvicorn>=0.34,<1
+python-multipart>=0.0.20,<1
+numpy>=1.26,<3
+pillow>=11.1,<13
+psutil>=6.1,<8
