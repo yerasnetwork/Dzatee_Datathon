@@ -435,13 +435,13 @@ function renderCard(violation, index) {
   head.append(jump);
   item.append(head);
 
-  item.append(element("p", "violation-description", text(violation.description) || "Описание не предоставлено."));
-  item.append(ruleBlock(violation));
-
   const score = Number(violation.score);
   if (Number.isFinite(score)) {
     item.append(element("p", "score-line", `Оценка модели: ${Math.round(Math.min(100, Math.max(0, score)))} из 100 (не вероятность и не юридическая оценка)`));
   }
+
+  item.append(element("p", "violation-description", text(violation.description) || "Описание не предоставлено."));
+  item.append(ruleBlock(violation));
 
   const frames = Array.isArray(violation.evidence_frames) ? violation.evidence_frames : [];
   if (frames.length) {

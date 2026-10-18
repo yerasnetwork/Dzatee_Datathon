@@ -11,3 +11,4 @@ bundle/*
 models/
 .env
 *.log
+*.zip

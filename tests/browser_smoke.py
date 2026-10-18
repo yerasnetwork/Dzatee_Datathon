@@ -68,6 +68,7 @@ def main() -> None:
         expect(page.locator("#analyze-button")).to_be_disabled()
         expect(page.locator("#verdict-text")).to_have_text("Обнаружены признаки возможных нарушений", timeout=25000)
         expect(page.locator(".violation-card")).to_have_count(2)
+        expect(page.locator(".violation-card > .violation-head + .score-line + .violation-description")).to_have_count(2)
         expect(page.locator(".frame-button")).to_have_count(6)
         expect(page.locator(".rule-block")).to_have_count(2)
         expect(page.locator(".rule-block dd.is-empty")).to_have_text("источник не указан")
@@ -85,9 +86,10 @@ def main() -> None:
         page.get_by_role("button", name="Закрыть увеличенный кадр").click()
         expect(page.locator("#frame-dialog")).to_be_hidden()
         page.screenshot(path=str(output / "ui-result.png"), full_page=True)
-        page.set_viewport_size({"width": 390, "height": 844})
+        page.set_viewport_size({"width": 360, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Horizontal overflow on mobile"
         page.screenshot(path=str(output / "ui-mobile.png"), full_page=True)
+        page.locator(".violation-card").first.screenshot(path=str(output / "ui-card-360.png"))
 
         # Reset to verify keyboard picker and browser-side validation as well.
         page.reload(wait_until="networkidle")
@@ -97,6 +99,7 @@ def main() -> None:
         assert not errors, errors
         assert not failures, failures
         summary = {"passed": True, "mock": True, "violations": 2, "evidence_frames": 6,
+                   "mobile_width": 360, "horizontal_overflow": False, "score_before_description": True,
                    "seek_seconds": seeked, "external_requests": external,
                    "browser_errors": errors, "failed_requests": failures,
                    "canceled_local_media": len(canceled_media),
