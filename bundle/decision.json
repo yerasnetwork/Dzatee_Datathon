@@ -218,8 +218,8 @@
  "kern": [
   1.0
  ],
- "tau_video": 0.0,
- "tau_event": 0.0,
+ "tau_video": 0.495,
+ "tau_event": 0.495,
  "rel_event": 0.8,
  "rel_centroid": 0.8,
  "rel_second": 0.92,
@@ -227,5 +227,16 @@
  "cluster_gap": 5.0,
  "max_events": 2,
  "time_offset": 0.03493430487217797,
- "other_below": 0.4
+ "other_below": 0.4,
+ "drop_other_if_typed": true,
+ "client_exit": {
+  "lo": 4.0,
+  "hi": 10.0,
+  "seated_above": -4.0,
+  "visitor_below": 1.0,
+  "type_p_min": 0.5,
+  "tau": 0.5,
+  "visitor_before_above": -3.0,
+  "seated_peak_above": -3.0
+ }
 }

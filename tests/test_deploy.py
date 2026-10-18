@@ -25,15 +25,46 @@ def test_pipeline_config_matches_approved_attachment():
     assert json.loads(content)["cfg"]["max_windows"] == 72
 
 
+# fc_pipeline.py и bundle/decision.json намеренно изменены относительно v3 из forte.zip
+# (фильтр «вышел клиент» и порог вывода, repo_update.zip). Эталоном для сверки служит
+# v3 с этими двумя файлами, закреплёнными по SHA-256 новых версий.
+UPDATED_FILES_SHA256 = {
+    "fc_pipeline.py": "d5ec279357174402cf2416022f477c422b58cf3bd0dd276d90c142876ff716a1",
+    "bundle/decision.json": "3c9c2d06f6aa3998cd62f146e4a553cd2e799efe6526679f9a6663f118c87f49",
+}
+
+
+def _reference_archive(source: Path, target: Path) -> Path:
+    prefix = "forte_pack_4b_v3/"
+    with zipfile.ZipFile(source) as outer:
+        if "forte_pack_4b_v3.zip" in outer.namelist():
+            data = outer.read("forte_pack_4b_v3.zip")
+        else:
+            data = source.read_bytes()
+    updated = {}
+    for name, digest in UPDATED_FILES_SHA256.items():
+        content = (ROOT / name).read_bytes()
+        assert hashlib.sha256(content).hexdigest() == digest, name
+        updated[prefix + name] = content
+    inner = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as v3, zipfile.ZipFile(inner, "w") as out:
+        for info in v3.infolist():
+            out.writestr(info, updated.get(info.filename, v3.read(info.filename)))
+    with zipfile.ZipFile(target, "w") as outer:
+        outer.writestr("forte_pack_4b_v3.zip", inner.getvalue())
+    return target
+
+
 @pytest.fixture
 def bundle_copy(tmp_path):
     archive = ROOT / "forte.zip"
     if not archive.exists():
         pytest.skip("Исходный пакет команды не включён в этот checkout")
-    (tmp_path / "bundle").mkdir()
+    project = tmp_path / "project"
+    (project / "bundle").mkdir(parents=True)
     for name in ("fc_pipeline.py", "bundle/decision.json", "bundle/pipeline_config.json"):
-        shutil.copyfile(ROOT / name, tmp_path / name)
-    return tmp_path, archive
+        shutil.copyfile(ROOT / name, project / name)
+    return project, _reference_archive(archive, tmp_path / "reference_v3.zip")
 
 
 def test_bundle_matches_archive_except_approved_configuration(bundle_copy):

@@ -1260,14 +1260,14 @@ QTEXT = dict(CHECKLIST + DESK_CHECKLIST)
 
 TYPE_TEXT = {   # шаблоны: только то, что можно утверждать по видео, формулировки осторожные
     "leaving_workplace": dict(
-        ru="Возможное нарушение: сотрудница покинула рабочее место, оставив его без присмотра.",
-        en="Possible violation: the employee left the workplace unattended."),
+        ru="Возможное нарушение: сотрудница покинула рабочее место, оставив его без присмотра. Модель может принять за сотрудницу посетителя, поэтому стоит проверить по кадрам, что вышла именно сотрудница.",
+        en="Possible violation: the employee left the workplace unattended. The model may mistake a visitor for the employee, so check in the frames that it is the employee who left."),
     "unsafe_money": dict(
         ru="Возможное нарушение: деньги, сейф или ключи на рабочем месте остались без должной защиты.",
         en="Possible violation: cash, the safe or keys at the workplace were left without proper protection."),
     "stranger_coming": dict(
-        ru="Возможное нарушение порядка допуска к рабочему месту: рядом находится посетитель или посторонний, чья личность по видео не подтверждена документом, либо вход в рабочую зону остаётся открытым.",
-        en="Possible violation of the access procedure at the workplace: a visitor or an outsider is nearby and the video does not show their identity being confirmed, or the entrance to the work area is left open."),
+        ru="Возможное нарушение порядка допуска к рабочему месту: рядом находится посетитель или посторонний, чья личность по видео не подтверждена документом, либо вход в рабочую зону остаётся открытым. Модель могла не заметить, как клиент показывал удостоверение, поэтому стоит проверить кадры.",
+        en="Possible violation of the access procedure at the workplace: a visitor or an outsider is nearby and the video does not show their identity being confirmed, or the entrance to the work area is left open. The model may have missed an identity card being shown, so check the frames."),
     "client_handling": dict(
         ru="Возможное нарушение порядка работы с клиентами и их деньгами: операция выполняется не по установленному порядку.",
         en="Possible breach of the procedure for serving clients and handling their money."),
@@ -1356,15 +1356,38 @@ class DecisionModel:
         z = ((self.features(Q) - self.tmu) / self.tsd) @ self.tW.T + self.tb
         return _softmax(z).mean(0)
 
-    def find(self, starts, Q, duration, win_sec):
-        """starts [n], Q [n, len(qkeys)] -> dict(score, events=[dict(t, p, type_key, type_p, facts)])."""
+    def _after(self, tt, Qo, t_ref, lo, hi, key):
+        """Среднее ответа `key` по окнам, начавшимся в [t_ref+lo, t_ref+hi]; None, если таких окон нет (событие у самого конца ролика)."""
+        j = self.qkeys.index(key)
+        m = (tt >= t_ref + lo - 1e-6) & (tt <= t_ref + hi + 1e-6)
+        return float(Qo[m, j].mean()) if m.any() else None
+
+    def is_client_exit(self, e, tt, Qo):
+        """«Уход с рабочего места» неверен, если вышел клиент, а сотрудница осталась. Два признака:
+        1) после события (через 4–10 с) за столом снова кто-то сидит, а посетителя уже нет: сотрудница на месте;
+        2) если после события в ролике кадров нет (событие у самого конца): до события у стола был посетитель, и в окне события
+           за столом сидящий есть. При настоящем уходе стол после события пуст, а посетителя у стола до него не было."""
+        g = self.spec.get("client_exit")
+        if not g or e["type_key"] != "leaving_workplace" or "seated" not in self.qkeys or e["type_p"] < g.get("type_p_min", 0.0):
+            return False
+        lo, hi, t0 = g.get("lo", 4.0), g.get("hi", 10.0), e["win_t0"]
+        has_v = "visitor" in self.qkeys
+        s_after = self._after(tt, Qo, t0, lo, hi, "seated")
+        if s_after is not None:
+            v_after = self._after(tt, Qo, t0, lo, hi, "visitor") if has_v else -99.0
+            e["seated_after"], e["visitor_after"] = s_after, v_after
+            return s_after > g.get("seated_above", -4.0) and v_after < g.get("visitor_below", 1.0)
+        if not has_v:
+            return False
+        v_before = self._after(tt, Qo, t0, -10.0, -2.0, "visitor")
+        s_peak = float(Qo[int(np.argmin(np.abs(tt - t0))), self.qkeys.index("seated")])
+        e["seated_after"], e["visitor_after"] = s_peak, (v_before if v_before is not None else -99.0)
+        return v_before is not None and v_before > g.get("visitor_before_above", -3.0) and s_peak > g.get("seated_peak_above", -3.0)
+
+    def _events(self, ps, tt, Qo, duration, win_sec):
+        """Кривая p -> события (кластеры окон с p не ниже доли от максимума), каждое с типом, фактами и окнами кластера (_idx)."""
         sp = self.spec
-        o = np.argsort(starts)
-        tt, Qo = np.asarray(starts, dtype=float)[o], np.asarray(Q, dtype=float)[o]
-        ps = _smooth(self.window_probs(Qo), sp.get("kern"))
         smax = float(ps.max())
-        if smax < sp.get("tau_video", 0.0):
-            return dict(score=smax, events=[], p=ps, t=tt)
         thr = min(max(sp.get("tau_event", 0.0), sp.get("rel_event", 0.8) * smax), smax)
         step = float(np.median(np.diff(tt))) if len(tt) > 1 else 2.0
         gap = max(sp.get("cluster_gap", 5.0), 1.6 * step)
@@ -1393,8 +1416,43 @@ class DecisionModel:
                 if qk in self.qkeys and qm[self.qkeys.index(qk)] > th:
                     facts.append((ru, en))
             evs.append(dict(t=t, p=pk, type_key=tkey, type_p=(float(tp.max()) if tp is not None else 0.0), facts=facts,
-                            win_t0=float(tt[m][int(np.argmax(ps[m]))])))
+                            win_t0=float(tt[m][int(np.argmax(ps[m]))]), _idx=idx))
         evs.sort(key=lambda e: -e["p"])
+        return evs
+
+    def find(self, starts, Q, duration, win_sec):
+        """starts [n], Q [n, len(qkeys)] -> dict(score, events=[dict(t, p, type_key, type_p, facts)])."""
+        sp = self.spec
+        o = np.argsort(starts)
+        tt, Qo = np.asarray(starts, dtype=float)[o], np.asarray(Q, dtype=float)[o]
+        ps = _smooth(self.window_probs(Qo), sp.get("kern"))
+        smax = float(ps.max())
+        if smax < sp.get("tau_video", 0.0):
+            return dict(score=smax, events=[], p=ps, t=tt)
+        # события «уход с рабочего места», после которых за столом сидит сотрудница (вышел клиент), не считаются нарушением:
+        # их окна гасятся, и берётся следующий по силе кластер
+        masked, n_masked, dropped = np.zeros(len(ps), bool), 0, []
+        pe, evs = ps, self._events(ps, tt, Qo, duration, win_sec)
+        for _ in range(4):
+            bad = [e for e in evs if self.is_client_exit(e, tt, Qo)]
+            if not bad:
+                break
+            for e in bad:
+                lo_t, hi_t = tt[e["_idx"]].min() - win_sec / 2, tt[e["_idx"]].max() + win_sec / 2
+                masked |= (tt >= lo_t) & (tt <= hi_t)
+                dropped.append(dict(t=e["t"], p=e["p"], type_key=e["type_key"], type_p=e["type_p"],
+                                    seated_after=e.get("seated_after", float("nan")), visitor_after=e.get("visitor_after", float("nan"))))
+            n_masked += len(bad)
+            pe = np.where(masked, 0.0, ps)
+            if float(pe.max()) <= 1e-9:
+                evs = []
+                break
+            evs = self._events(pe, tt, Qo, duration, win_sec)
+        smax_f = float(pe.max())
+        if n_masked and (not evs or smax_f < sp.get("client_exit", {}).get("tau", 0.0)):
+            return dict(score=smax_f, events=[], p=pe, t=tt, n_masked=n_masked, dropped=dropped)
+        if sp.get("drop_other_if_typed", True) and any(e["type_key"] != "other" for e in evs):
+            evs = [e for e in evs if e["type_key"] != "other"]      # «не определено» рядом с событием с типом — лишний шум для проверяющего
         keep = []
         for e in evs:
             if len(keep) >= sp.get("max_events", 2):
@@ -1402,7 +1460,9 @@ class DecisionModel:
             if keep and (e["p"] < sp.get("rel_second", 0.92) * keep[0]["p"] or min(abs(e["t"] - k["t"]) for k in keep) < sp.get("min_sep", 8.0)):
                 continue
             keep.append(e)
-        return dict(score=smax, events=sorted(keep, key=lambda e: e["t"]), p=ps, t=tt)
+        for e in keep:
+            e.pop("_idx", None)
+        return dict(score=smax_f, events=sorted(keep, key=lambda e: e["t"]), p=pe, t=tt, n_masked=n_masked, dropped=dropped)
 
 
 class ChecklistAnalyzer(Analyzer):
@@ -1470,6 +1530,9 @@ class ChecklistAnalyzer(Analyzer):
             return dict(verdict="no_violation", violations=[])
         starts, Q = self.scan(v)
         res = self.decision.find(starts, Q, v.duration, cfg.win_sec)
+        for d in res.get("dropped") or []:
+            log(f"{v.key}: событие «уход с места» на {d['t']:.1f} с снято — вышел клиент, сотрудница осталась за столом "
+                f"(сидящий после: {d['seated_after']:+.1f}, посетитель после: {d['visitor_after']:+.1f})")
         events = []
         for e in res["events"]:
             te = e["t"]
